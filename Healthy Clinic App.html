@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Healthy Clinic Appointment System (Robust Mode)</title>
+    
+    <!-- 1. Load React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- 2. Load Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- 3. Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 4. Load FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+    <!-- 5. Load Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, updateDoc, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.firebaseModules = { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, getFirestore, collection, addDoc, onSnapshot, updateDoc, doc, deleteDoc };
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;700&display=swap');
+        body { font-family: 'Prompt', sans-serif; }
+        
+        /* Animations */
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
+        
+        @keyframes fadeInDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in-down { animation: fadeInDown 0.4s ease-out; }
+        
+        @keyframes scaleIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
+        .animate-scale-in { animation: scaleIn 0.2s ease-out; }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- Firebase Init Helper ---
+        const fb = window.firebaseModules;
+        let db, auth, appId;
+
+        // 🟢 [จุดแก้ไขที่ 1] วางค่า Config จาก Firebase ตรงนี้ (ถ้าไม่มี ระบบจะทำงานแบบ Offline)
+        const MY_FIREBASE_CONFIG = {
+            apiKey: "YOUR_API_KEY", // <--- เอาค่าจาก Firebase Console มาแทนที่ตรงนี้
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT_ID.firebasestorage.app",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        const initFirebase = () => {
+            if (!fb) return null;
+            try {
+                let firebaseConfig;
+                let currentAppId = 'default-app-id';
+
+                if (typeof __firebase_config !== 'undefined') {
+                    firebaseConfig = JSON.parse(__firebase_config);
+                    currentAppId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                } 
+                // Check if user provided real config
+                else if (MY_FIREBASE_CONFIG.apiKey !== "YOUR_API_KEY") {
+                    firebaseConfig = MY_FIREBASE_CONFIG;
+                    currentAppId = MY_FIREBASE_CONFIG.projectId;
+                } else {
+                    return null; // Return null to trigger Offline Mode
+                }
+
+                // Prevent re-initialization if already initialized
+                if (!db) { 
+                    const app = fb.initializeApp(firebaseConfig);
+                    auth = fb.getAuth(app);
+                    db = fb.getFirestore(app);
+                }
+                appId = currentAppId;
+                
+                return { auth, db, appId };
+            } catch (e) {
+                console.warn("Firebase connection failed, using offline mode:", e);
+                return null;
+            }
+        };
+
+        // --- Mock Data ---
+        const DOCTORS = [
+            { id: 1, name: 'นพ. สมชาย รักดี', department: 'อายุรกรรม (General Medicine)', image: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Somchai&backgroundColor=b6e3f4' },
+            { id: 2, name: 'พญ. วิไล ใจดี', department: 'กุมารเวช (Pediatrics)', image: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Wilai&backgroundColor=ffdfbf' },
+            { id: 3, name: 'ทพ. เอก ฟันสวย', department: 'ทันตกรรม (Dentistry)', image: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Ek&backgroundColor=c0aede' },
+        ];
+
+        const TIME_SLOTS = [
+            '09:00 - 09:30', '09:30 - 10:00', '10:00 - 10:30', '10:30 - 11:00',
+            '13:00 - 13:30', '13:30 - 14:00', '14:00 - 14:30', '14:30 - 15:00',
+        ];
+
+        // --- Shared Components ---
+        const NotificationToast = ({ message, type, onClose }) => (
+            <div className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg flex items-center gap-3 animate-fade-in-down ${
+                type === 'success' ? 'bg-green-100 border border-green-200 text-green-800' : 
+                type === 'warning' ? 'bg-orange-100 border border-orange-200 text-orange-800' :
+                'bg-red-100 border border-red-200 text-red-800'
+            }`}>
+                <i className={`fa-solid ${type === 'success' ? 'fa-circle-check' : type === 'warning' ? 'fa-triangle-exclamation' : 'fa-circle-exclamation'} text-xl`}></i>
+                <div>
+                    <p className="font-bold text-sm">{type === 'success' ? 'สำเร็จ' : type === 'warning' ? 'แจ้งเตือนระบบ' : 'ข้อผิดพลาด'}</p>
+                    <p className="text-xs">{message}</p>
+                </div>
+                <button onClick={onClose} className="ml-auto hover:bg-black/5 p-1 rounded w-6 h-6 flex items-center justify-center">
+                    <i className="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+        );
+
+        const Modal = ({ isOpen, onClose, children, title }) => {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-scale-in">
+                        <div className="bg-teal-600 p-4 flex justify-between items-center text-white">
+                            <h3 className="font-bold text-lg">{title}</h3>
+                            <button onClick={onClose} className="hover:bg-white/20 p-1 rounded-full w-8 h-8 flex items-center justify-center">
+                                <i className="fa-solid fa-xmark"></i>
+                            </button>
+                        </div>
+                        <div className="p-6">
+                            {children}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Sub-Views ---
+        const PatientView = ({ 
+            selectedDoctor, setSelectedDoctor, 
+            selectedDate, setSelectedDate,
+            selectedTime, setSelectedTime,
+            patientForm, setPatientForm,
+            handleBooking, isSlotTaken,
+            loading 
+        }) => {
+            useEffect(() => {
+                if (selectedDoctor === 'all') {
+                    setSelectedDoctor(DOCTORS[0].id);
+                }
+            }, []);
+
+            return (
+                <div className="animate-fade-in">
+                    <div className="bg-white p-6 rounded-2xl shadow-sm mb-6 border border-slate-100">
+                        <h2 className="text-2xl font-bold text-teal-800 mb-4 flex items-center gap-2">
+                            <i className="fa-solid fa-user-injured"></i> ลงนัดหมายแพทย์ (Patient Booking)
+                        </h2>
+                        <div className="grid md:grid-cols-2 gap-8">
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-600 mb-1">เลือกแพทย์</label>
+                                    <div className="grid grid-cols-1 gap-3">
+                                        {DOCTORS.map(doc => (
+                                            <div 
+                                                key={doc.id}
+                                                onClick={() => setSelectedDoctor(doc.id)}
+                                                className={`p-3 rounded-xl border cursor-pointer flex items-center gap-3 transition-all ${
+                                                    selectedDoctor === doc.id ? 'border-teal-500 bg-teal-50 ring-1 ring-teal-500' : 'border-slate-200 hover:bg-slate-50'
+                                                }`}
+                                            >
+                                                <img src={doc.image} alt={doc.name} className="w-10 h-10 rounded-full bg-slate-100" />
+                                                <div>
+                                                    <div className="font-semibold text-slate-800">{doc.name}</div>
+                                                    <div className="text-xs text-slate-500">{doc.department}</div>
+                                                </div>
+                                                {selectedDoctor === doc.id && <i className="fa-solid fa-circle-check ml-auto text-teal-500 text-lg"></i>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-600 mb-1">วันที่</label>
+                                        <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full p-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-teal-500 outline-none" />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-600 mb-1">เวลาที่ว่าง</label>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {loading ? (
+                                            <div className="col-span-2 text-center py-4 text-slate-400">กำลังบันทึกข้อมูล...</div>
+                                        ) : TIME_SLOTS.map(time => {
+                                            const taken = isSlotTaken(selectedDoctor, selectedDate, time);
+                                            return (
+                                                <button
+                                                    key={time}
+                                                    disabled={taken}
+                                                    onClick={() => setSelectedTime(time)}
+                                                    className={`p-2 rounded-lg text-sm border transition-all ${
+                                                        taken ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed decoration-slate-400' : selectedTime === time ? 'bg-teal-600 text-white border-teal-600 shadow-md' : 'bg-white text-slate-700 border-slate-200 hover:border-teal-400 hover:text-teal-600'
+                                                    }`}
+                                                >
+                                                    {time} {taken && '(เต็ม)'}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="bg-slate-50 p-6 rounded-xl border border-slate-200 h-fit">
+                                <h3 className="font-semibold text-slate-800 mb-4 flex items-center gap-2"><i className="fa-solid fa-file-lines"></i> ข้อมูลผู้ป่วย</h3>
+                                <div className="space-y-3">
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-500 uppercase">ชื่อ-นามสกุล <span className="text-red-500">*</span></label>
+                                        <input type="text" className="w-full p-2.5 rounded-lg border border-slate-300 mt-1 focus:ring-2 focus:ring-teal-500 outline-none" placeholder="เช่น สมชาย รักดี" value={patientForm.name} onChange={(e) => setPatientForm({...patientForm, name: e.target.value})} />
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="text-xs font-bold text-slate-500 uppercase">เบอร์โทรศัพท์ <span className="text-red-500">*</span></label>
+                                            <div className="relative">
+                                                <i className="fa-solid fa-phone absolute left-3 top-3.5 text-slate-400 text-sm"></i>
+                                                <input type="tel" className="w-full pl-9 p-2.5 rounded-lg border border-slate-300 mt-1 focus:ring-2 focus:ring-teal-500 outline-none" placeholder="08X-XXX-XXXX" value={patientForm.phone} onChange={(e) => setPatientForm({...patientForm, phone: e.target.value})} />
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label className="text-xs font-bold text-slate-500 uppercase">อีเมล</label>
+                                            <div className="relative">
+                                                <i className="fa-solid fa-envelope absolute left-3 top-3.5 text-slate-400 text-sm"></i>
+                                                <input type="email" className="w-full pl-9 p-2.5 rounded-lg border border-slate-300 mt-1 focus:ring-2 focus:ring-teal-500 outline-none" placeholder="email@example.com" value={patientForm.email} onChange={(e) => setPatientForm({...patientForm, email: e.target.value})} />
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-500 uppercase">อาการเบื้องต้น</label>
+                                        <textarea className="w-full p-2.5 rounded-lg border border-slate-300 mt-1 focus:ring-2 focus:ring-teal-500 outline-none" rows="3" placeholder="เช่น มีไข้, ไอ, ปวดฟัน..." value={patientForm.symptom} onChange={(e) => setPatientForm({...patientForm, symptom: e.target.value})}></textarea>
+                                    </div>
+                                    <div className="pt-4">
+                                        <button onClick={handleBooking} disabled={loading} className={`w-full py-3 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-bold shadow-lg shadow-teal-200 transition-all active:scale-95 flex items-center justify-center gap-2 ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                                            {loading ? 'กำลังบันทึก...' : <span>ยืนยันการจอง <i className="fa-solid fa-chevron-right"></i></span>}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const StaffView = ({ 
+            appointments, selectedDoctor, setSelectedDoctor, 
+            selectedDate, setSelectedDate, getDoctorName,
+            handleSendEmail, handleSendNotification, handleCancelAppointment,
+            handleLogout, openBackupModal
+        }) => {
+            const filteredApps = appointments.filter(app => 
+                app.status !== 'cancelled' && 
+                (selectedDoctor === 'all' || app.doctorId === parseInt(selectedDoctor))
+            ).sort((a,b) => a.time.localeCompare(b.time));
+
+            return (
+                <div className="animate-fade-in">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold text-teal-800 flex items-center gap-2"><i className="fa-solid fa-shield-halved"></i> Dashboard เจ้าหน้าที่</h2>
+                        <div className="flex gap-3 items-center">
+                            <div className="flex gap-2">
+                                <select className="p-2 rounded-lg border border-slate-300 text-sm outline-none" onChange={(e) => setSelectedDoctor(e.target.value)} value={selectedDoctor}>
+                                    <option value="all">แพทย์ทั้งหมด</option>
+                                    {DOCTORS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                                </select>
+                                <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="p-2 rounded-lg border border-slate-300 text-sm outline-none" />
+                            </div>
+                            <button onClick={openBackupModal} className="px-4 py-2 bg-teal-100 text-teal-700 rounded-lg hover:bg-teal-200 font-medium text-sm transition-colors flex items-center gap-2"><i className="fa-solid fa-database"></i> จัดการข้อมูล</button>
+                            <button onClick={handleLogout} className="px-4 py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 font-medium text-sm transition-colors flex items-center gap-2"><i className="fa-solid fa-right-from-bracket"></i></button>
+                        </div>
+                    </div>
+                    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="bg-teal-50 text-teal-800 border-b border-teal-100">
+                                    <th className="p-4 font-semibold">เวลา</th>
+                                    <th className="p-4 font-semibold">ผู้ป่วย</th>
+                                    <th className="p-4 font-semibold">แพทย์</th>
+                                    <th className="p-4 font-semibold">อาการ</th>
+                                    <th className="p-4 font-semibold">ติดต่อ</th>
+                                    <th className="p-4 font-semibold text-right">จัดการ</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {filteredApps.length === 0 ? (
+                                    <tr><td colSpan="6" className="p-8 text-center text-slate-400">ไม่มีนัดหมายในวัน/ช่วงเวลานี้ (Offline Mode: ข้อมูลอาจไม่ครบถ้วน)</td></tr>
+                                ) : (
+                                    filteredApps.map(app => (
+                                        <tr key={app.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                                            <td className="p-4 font-mono text-teal-600 font-medium">{app.time}</td>
+                                            <td className="p-4 font-medium text-slate-800">{app.patientName}<div className="text-xs text-slate-400 font-light">{app.email !== '-' ? app.email : ''}</div></td>
+                                            <td className="p-4 text-slate-600 text-sm"><div className="flex items-center gap-2"><img src={DOCTORS.find(d => d.id === app.doctorId)?.image} className="w-6 h-6 rounded-full bg-slate-200" alt="" />{getDoctorName(app.doctorId)}</div></td>
+                                            <td className="p-4 text-slate-600 text-sm max-w-xs truncate">{app.symptom}</td>
+                                            <td className="p-4 text-slate-600 text-sm">{app.phone}</td>
+                                            <td className="p-4 text-right">
+                                                <div className="flex justify-end gap-2">
+                                                    <button onClick={() => handleSendEmail(app)} className={`px-3 py-1 rounded-lg text-sm transition-colors border flex items-center gap-1 ${!app.email || app.email === '-' ? 'text-slate-400 border-slate-200 cursor-not-allowed' : 'text-indigo-600 hover:bg-indigo-50 border-indigo-200'}`} title="ส่งอีเมล" disabled={!app.email || app.email === '-'}><i className="fa-solid fa-envelope"></i></button>
+                                                    <button onClick={() => handleSendNotification(app)} className="text-blue-600 hover:bg-blue-50 px-3 py-1 rounded-lg text-sm transition-colors border border-blue-200 flex items-center gap-1" title="ส่งแจ้งเตือน"><i className="fa-solid fa-bell"></i></button>
+                                                    <button onClick={() => handleCancelAppointment(app.id)} className="text-red-500 hover:bg-red-50 px-3 py-1 rounded-lg text-sm transition-colors border border-red-200" title="ยกเลิก"><i className="fa-solid fa-trash"></i></button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Main App Component ---
+        function HealthyClinicApp() {
+            const [view, setView] = useState('home');
+            const [isLoggedIn, setIsLoggedIn] = useState(false);
+            const [showLoginModal, setShowLoginModal] = useState(false);
+            const [showBackupModal, setShowBackupModal] = useState(false);
+            const [loginCredentials, setLoginCredentials] = useState({ username: '', password: '' });
+            const fileInputRef = useRef(null);
+            const [appointments, setAppointments] = useState([]); 
+            const [notification, setNotification] = useState(null);
+            const [firebaseUser, setFirebaseUser] = useState(null);
+            const [loading, setLoading] = useState(false);
+            const [selectedDoctor, setSelectedDoctor] = useState(DOCTORS[0].id);
+            const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+            const [selectedTime, setSelectedTime] = useState('');
+            const [patientForm, setPatientForm] = useState({ name: '', phone: '', email: '', symptom: '' });
+            const [showConfirmModal, setShowConfirmModal] = useState(false);
+
+            // --- [จุดแก้ไขที่ 2] ระบบตรวจจับโหมด Online/Offline ---
+            useEffect(() => {
+                const fbParams = initFirebase();
+                if (fbParams) { // Online Mode
+                    const { auth, db, appId } = fbParams;
+                    const initAuth = async () => {
+                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await fb.signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                             await fb.signInAnonymously(auth);
+                        }
+                    };
+                    initAuth();
+                    const unsubscribeAuth = fb.onAuthStateChanged(auth, (user) => setFirebaseUser(user));
+                    
+                    let unsubscribeSnapshot;
+                    const q = fb.collection(db, 'artifacts', appId, 'public', 'data', 'appointments');
+                    unsubscribeSnapshot = fb.onSnapshot(q, (snapshot) => {
+                        const apps = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        setAppointments(apps);
+                    }, (error) => {
+                        console.warn("Cannot read from DB, switching to offline view:", error);
+                        // Don't clear appointments, keep using local state if DB fails
+                    });
+
+                    return () => {
+                        unsubscribeAuth();
+                        if (unsubscribeSnapshot) unsubscribeSnapshot();
+                    };
+                } else {
+                    // Offline Mode: Load default mock data
+                    setAppointments([
+                        { id: 1, patientName: 'สมศรี มีสุข (Offline)', email: 'somsri@email.com', doctorId: 1, date: '2025-11-24', time: '09:00 - 09:30', phone: '081-111-1111', symptom: 'ปวดหัว ตัวร้อน', status: 'confirmed' },
+                        { id: 2, patientName: 'เด็กชาย กล้า (Offline)', email: 'mom_kla@email.com', doctorId: 2, date: '2025-11-24', time: '10:00 - 10:30', phone: '089-999-9999', symptom: 'ฉีดวัคซีนไข้หวัดใหญ่', status: 'confirmed' },
+                    ]);
+                }
+            }, []);
+
+            const showNotification = (msg, type = 'success') => {
+                setNotification({ message: msg, type });
+                setTimeout(() => setNotification(null), 4000);
+            };
+
+            const handleStaffClick = () => isLoggedIn ? setView('staff') : setShowLoginModal(true);
+            const handleLogin = () => {
+                if (loginCredentials.username === 'admin' && loginCredentials.password === '1234') {
+                    setIsLoggedIn(true);
+                    setShowLoginModal(false);
+                    setView('staff');
+                    showNotification('เข้าสู่ระบบเจ้าหน้าที่สำเร็จ', 'success');
+                    setLoginCredentials({ username: '', password: '' });
+                } else {
+                    showNotification('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง', 'error');
+                }
+            };
+            const handleLogout = () => { setIsLoggedIn(false); setView('home'); showNotification('ออกจากระบบเรียบร้อยแล้ว', 'success'); };
+            
+            const getDoctorName = (id) => DOCTORS.find(d => d.id === parseInt(id))?.name || 'Unknown';
+            const isSlotTaken = (docId, date, time) => appointments.some(app => app.doctorId === parseInt(docId) && app.date === date && app.time === time && app.status !== 'cancelled');
+
+            const handleBooking = async () => {
+                if (!patientForm.name || !patientForm.phone || !selectedTime) return showNotification('กรุณากรอกชื่อ เบอร์โทร และเลือกเวลา', 'error');
+                if (isSlotTaken(selectedDoctor, selectedDate, selectedTime)) return showNotification('เวลานี้ถูกจองแล้ว กรุณาเลือกเวลาอื่น', 'error');
+
+                setLoading(true);
+                const newAppointment = {
+                    patientName: patientForm.name, phone: patientForm.phone, email: patientForm.email || '-',
+                    symptom: patientForm.symptom, doctorId: parseInt(selectedDoctor), date: selectedDate,
+                    time: selectedTime, status: 'confirmed', createdAt: new Date().toISOString()
+                };
+
+                const fbParams = initFirebase();
+                if (fbParams && fbParams.db && fbParams.appId) {
+                    // [CASE 1] Online Mode: Save to Firebase
+                    try {
+                        const { db, appId } = fbParams;
+                        const colRef = fb.collection(db, 'artifacts', appId, 'public', 'data', 'appointments');
+                        await fb.addDoc(colRef, newAppointment);
+                        showSuccess();
+                    } catch (error) {
+                        console.error("DB Error:", error);
+                        showNotification('เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล: ' + error.message, 'error');
+                    }
+                } else {
+                    // [CASE 2] Offline Mode: Save to Local State
+                    const offlineAppt = { ...newAppointment, id: Date.now().toString() };
+                    setAppointments(prev => [...prev, offlineAppt]);
+                    showSuccess(true); // true = isOffline
+                }
+                setLoading(false);
+            };
+
+            const showSuccess = (isOffline = false) => {
+                setShowConfirmModal(true);
+                const msg = isOffline ? 'บันทึกในเครื่องสำเร็จ (Offline Mode)' : 'บันทึกนัดหมายสำเร็จ';
+                if (patientForm.email && patientForm.email !== '-') {
+                    setTimeout(() => showNotification(`📧 ระบบส่งอีเมลยืนยันอัตโนมัติไปยัง ${patientForm.email} แล้ว`, 'success'), 800);
+                } else {
+                    setTimeout(() => showNotification(msg, isOffline ? 'warning' : 'success'), 800);
+                }
+                setPatientForm({ name: '', phone: '', email: '', symptom: '' });
+                setSelectedTime('');
+            }
+
+            const handleSendNotification = (appointment) => showNotification(`ส่งข้อความแจ้งเตือน (SMS/LINE) ไปยัง คุณ${appointment.patientName} เรียบร้อยแล้ว`, 'success');
+            const handleSendEmail = (appointment) => {
+                if (!appointment.email || appointment.email === '-') return showNotification(`ไม่พบข้อมูลอีเมลของผู้ป่วยรายนี้`, 'error');
+                showNotification(`ส่งอีเมลยืนยันนัดหมายไปยัง ${appointment.email} เรียบร้อยแล้ว`, 'success');
+            };
+            
+            const handleCancelAppointment = async (id) => {
+                if (confirm('ยืนยันการยกเลิกนัดหมายนี้?')) {
+                    const fbParams = initFirebase();
+                    if (fbParams && fbParams.db) {
+                        // Online delete
+                        try {
+                            const { db, appId } = fbParams;
+                            const docRef = fb.doc(db, 'artifacts', appId, 'public', 'data', 'appointments', id);
+                            await fb.updateDoc(docRef, { status: 'cancelled' });
+                            showNotification('ยกเลิกนัดหมายเรียบร้อยแล้ว');
+                        } catch(e) { showNotification('ไม่สามารถยกเลิกได้ (DB Error)', 'error'); }
+                    } else {
+                        // Offline delete
+                        setAppointments(prev => prev.filter(app => app.id !== id));
+                        showNotification('ลบนัดหมายออกจากเครื่องเรียบร้อยแล้ว', 'success');
+                    }
+                }
+            };
+            
+            // --- Backup/Restore (Mock for now) ---
+            const downloadBackup = () => {
+                const dataStr = JSON.stringify(appointments, null, 2);
+                const blob = new Blob([dataStr], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a'); link.href = url; link.download = `clinic_backup.json`;
+                document.body.appendChild(link); link.click(); document.body.removeChild(link);
+                showNotification('ดาวน์โหลดไฟล์สำรองข้อมูลเรียบร้อยแล้ว', 'success');
+            };
+
+            return (
+                <div className="min-h-screen font-sans text-slate-800">
+                    {notification && <NotificationToast message={notification.message} type={notification.type} onClose={() => setNotification(null)} />}
+                    <Modal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} title="เข้าสู่ระบบเจ้าหน้าที่">
+                        <div className="space-y-4">
+                            <div className="flex justify-center mb-4"><div className="w-16 h-16 bg-teal-100 rounded-full flex items-center justify-center"><i className="fa-solid fa-lock text-teal-600 text-2xl"></i></div></div>
+                            <div><label className="block text-sm font-medium text-slate-600 mb-1">ชื่อผู้ใช้</label><input type="text" className="w-full p-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-teal-500 outline-none" placeholder="ระบุชื่อผู้ใช้" value={loginCredentials.username} onChange={(e) => setLoginCredentials({...loginCredentials, username: e.target.value})} /></div>
+                            <div><label className="block text-sm font-medium text-slate-600 mb-1">รหัสผ่าน</label><input type="password" className="w-full p-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-teal-500 outline-none" placeholder="ระบุรหัสผ่าน" value={loginCredentials.password} onChange={(e) => setLoginCredentials({...loginCredentials, password: e.target.value})} /></div>
+                            <button onClick={handleLogin} className="w-full bg-teal-600 text-white py-2.5 rounded-lg hover:bg-teal-700 font-bold mt-2">เข้าสู่ระบบ</button>
+                        </div>
+                    </Modal>
+                    <Modal isOpen={showBackupModal} onClose={() => setShowBackupModal(false)} title="จัดการข้อมูลระบบ">
+                        <div className="space-y-6 text-center">
+                            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4"><i className="fa-solid fa-database text-blue-600 text-2xl"></i></div>
+                            <button onClick={downloadBackup} className="w-full bg-white border border-teal-200 text-teal-700 hover:bg-teal-50 py-2 rounded-lg text-sm font-medium transition-colors">ดาวน์โหลดไฟล์ Backup</button>
+                            <p className="text-xs text-slate-400">การกู้คืนข้อมูลปิดใช้งานในเวอร์ชัน Demo</p>
+                        </div>
+                    </Modal>
+                    <Modal isOpen={showConfirmModal} onClose={() => setShowConfirmModal(false)} title="ยืนยันการนัดหมายสำเร็จ">
+                        <div className="text-center space-y-4">
+                            <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto"><i className="fa-solid fa-bell text-green-600 text-2xl"></i></div>
+                            <div><h4 className="font-bold text-xl text-slate-800">จองคิวเรียบร้อยแล้ว!</h4><p className="text-slate-500 text-sm mt-2">ระบบกำลังส่งข้อความยืนยันไปที่ LINE และ Email</p></div>
+                            <button onClick={() => { setShowConfirmModal(false); setView('home'); }} className="w-full bg-teal-600 text-white py-2 rounded-lg hover:bg-teal-700">ตกลง (Close)</button>
+                        </div>
+                    </Modal>
+                    <nav className="bg-white shadow-sm sticky top-0 z-30 border-b border-slate-200">
+                        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
+                            <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('home')}><div className="w-8 h-8 bg-teal-500 rounded-lg flex items-center justify-center text-white"><span className="font-bold text-lg">+</span></div><h1 className="font-bold text-xl text-teal-800">Healthy Clinic</h1></div>
+                            <div className="flex gap-2">
+                                <button onClick={() => setView('patient')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${view === 'patient' ? 'bg-teal-50 text-teal-700' : 'text-slate-500 hover:bg-slate-50'}`}>สำหรับผู้ป่วย</button>
+                                <button onClick={handleStaffClick} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${view === 'staff' ? 'bg-teal-50 text-teal-700' : 'text-slate-500 hover:bg-slate-50'}`}>สำหรับเจ้าหน้าที่</button>
+                            </div>
+                        </div>
+                    </nav>
+                    <main className="max-w-5xl mx-auto p-4 py-8">
+                        {view === 'home' && (
+                            <div className="text-center py-12 animate-fade-in">
+                                <h1 className="text-4xl font-bold text-teal-900 mb-4">ยินดีต้อนรับสู่ คลินิกสุขภาพดี</h1>
+                                <p className="text-slate-600 text-lg mb-8">ระบบนัดหมายออนไลน์ สะดวก รวดเร็ว ปลอดภัย</p>
+                                <div className="grid md:grid-cols-2 gap-6 max-w-2xl mx-auto">
+                                    <button onClick={() => setView('patient')} className="group bg-white p-8 rounded-2xl shadow-sm hover:shadow-xl border border-slate-200 transition-all hover:-translate-y-1">
+                                        <div className="w-16 h-16 bg-teal-100 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:bg-teal-200 transition-colors"><i className="fa-regular fa-calendar text-teal-600 text-2xl"></i></div>
+                                        <h3 className="text-xl font-bold text-slate-800 mb-2">จองคิวตรวจ</h3><p className="text-slate-500">สำหรับผู้ป่วยที่ต้องการนัดหมายแพทย์ล่วงหน้า</p>
+                                    </button>
+                                    <button onClick={handleStaffClick} className="group bg-white p-8 rounded-2xl shadow-sm hover:shadow-xl border border-slate-200 transition-all hover:-translate-y-1">
+                                        <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:bg-blue-200 transition-colors"><i className="fa-solid fa-lock text-blue-600 text-2xl"></i></div>
+                                        <h3 className="text-xl font-bold text-slate-800 mb-2">เข้าสู่ระบบเจ้าหน้าที่</h3><p className="text-slate-500">สำหรับแพทย์และพนักงานเพื่อจัดการนัดหมาย</p>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                        {view === 'patient' && <PatientView selectedDoctor={selectedDoctor} setSelectedDoctor={setSelectedDoctor} selectedDate={selectedDate} setSelectedDate={setSelectedDate} selectedTime={selectedTime} setSelectedTime={setSelectedTime} patientForm={patientForm} setPatientForm={setPatientForm} handleBooking={handleBooking} isSlotTaken={isSlotTaken} loading={loading} />}
+                        {view === 'staff' && <StaffView appointments={appointments} selectedDoctor={selectedDoctor} setSelectedDoctor={setSelectedDoctor} selectedDate={selectedDate} setSelectedDate={setSelectedDate} getDoctorName={getDoctorName} handleSendEmail={handleSendEmail} handleSendNotification={handleSendNotification} handleCancelAppointment={handleCancelAppointment} handleLogout={handleLogout} openBackupModal={() => setShowBackupModal(true)} />}
+                    </main>
+                </div>
+            );
+        }
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<HealthyClinicApp />);
+    </script>
+</body>
+</html>
